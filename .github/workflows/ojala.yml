@@ -1,0 +1,79 @@
+name: Build WDA IPA
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      LANG: en_US.UTF-8
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install brew deps
+        run: |
+          set -e
+          brew update || true
+          brew install carthage || true
+
+      - name: Bootstrap WebDriverAgent dependencies
+        run: |
+          set -e
+          if [ -f Scripts/bootstrap.sh ]; then
+            chmod +x Scripts/bootstrap.sh
+            ./Scripts/bootstrap.sh -d
+          else
+            echo "No Scripts/bootstrap.sh encontrado; continúa igual"
+          fi
+
+      - name: Build WebDriverAgent (no signing)
+        run: |
+          set -e
+          DERIVED=build/derived
+          mkdir -p "$DERIVED"
+          # Forzar build sin firma (útil para jailbreak + AppSync)
+          xcodebuild -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$DERIVED" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            build | tee build/build.log
+
+      - name: Locate .app and create .ipa
+        run: |
+          set -e
+          PRODUCTS_DIR=build/derived/Build/Products/Release-iphoneos
+          echo "Buscando .app en: $PRODUCTS_DIR"
+          ls -la "$PRODUCTS_DIR" || true
+          # Encontrar el primer .app dentro de productos
+          APP=$(find "$PRODUCTS_DIR" -maxdepth 1 -type d -name '*.app' -print -quit)
+          if [ -z "$APP" ]; then
+            echo "ERROR: No se encontró .app en $PRODUCTS_DIR"
+            echo "Contenido del directorio build/derived:"
+            find build/derived -maxdepth 3 -type f -print || true
+            echo "Mostrando build log (si existe):"
+            sed -n '1,200p' build/build.log || true
+            exit 1
+          fi
+          echo "App encontrada: $APP"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          # Empaquetamos como .ipa
+          ZIPNAME=WebDriverAgent.ipa
+          rm -f "$ZIPNAME"
+          /usr/bin/zip -qry "$ZIPNAME" Payload
+          mkdir -p artifact
+          mv "$ZIPNAME" artifact/
+          echo "IPA creado en artifact/$(basename $ZIPNAME)"
+          ls -la artifact
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDriverAgent-ipa
+          path: artifact/*.ipa
